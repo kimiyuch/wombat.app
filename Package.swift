@@ -2,9 +2,9 @@
 import PackageDescription
 
 let package = Package(
-    name: "DiskLens",
+    name: "Wombat",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "DiskLens", path: "Sources/DiskLens")
+        .executableTarget(name: "Wombat", path: "Sources/Wombat")
     ]
 )

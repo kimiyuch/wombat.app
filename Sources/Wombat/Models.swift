@@ -1,32 +1,33 @@
 import SwiftUI
 
-enum Area: String, CaseIterable {
+enum Area: String, CaseIterable, Codable {
     case home = "Home folders"
     case library = "App data (~/Library)"
     case apps = "Applications"
     case system = "macOS & system"
     case free = "Free"
 
+    /// The same colours as the icon and the website's usage bar.
     var color: Color {
         switch self {
-        case .home: return .blue
-        case .library: return .purple
-        case .apps: return .orange
-        case .system: return .gray
-        case .free: return Color.secondary.opacity(0.18)
+        case .home: return Color(hex: 0x4287ff)
+        case .library: return Color(hex: 0xa865f0)
+        case .apps: return Color(hex: 0xffa040)
+        case .system: return Color(hex: 0x96959e)
+        case .free: return Theme.free
         }
     }
 }
 
-struct UsageSlice: Identifiable {
-    let id = UUID()
+struct UsageSlice: Identifiable, Codable {
+    var id = UUID()
     let name: String
     let bytes: Int64
     let area: Area
     var path: String? = nil
 }
 
-struct FolderSize: Identifiable, Hashable {
+struct FolderSize: Identifiable, Hashable, Codable {
     var id: String { path }
     let path: String
     let bytes: Int64
@@ -40,7 +41,43 @@ enum Risk: String {
     case safe = "Safe"
     case check = "Check first"
 
-    var color: Color { self == .safe ? .green : .orange }
+    var color: Color { self == .safe ? Theme.green : Theme.orange }
+}
+
+/// What a scan measures. The project search walks the whole home folder, so it's slow and optional.
+enum ScanKind: String, CaseIterable, Codable, Identifiable {
+    case overview
+    case projects
+    case everything
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .overview: return "Disk overview"
+        case .projects: return "Projects"
+        case .everything: return "Everything"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .overview: return "Your home folder, ~/Library, apps, Xcode and Homebrew. Fills the usage bar, the folder lists and the cleanup list."
+        case .projects: return "Searches your home folder for node_modules and Composer vendor folders. The slow one on big drives."
+        case .everything: return "The disk overview, then the project search."
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .overview: return "chart.bar.xaxis"
+        case .projects: return "shippingbox"
+        case .everything: return "square.stack.3d.down.right"
+        }
+    }
+
+    var includesOverview: Bool { self != .projects }
+    var includesProjects: Bool { self != .overview }
 }
 
 enum FolderKind: String, Identifiable {
@@ -86,6 +123,24 @@ struct CleanupItem: Identifiable {
     var command: String? = nil
     /// The size is an upper bound (e.g. a whole data folder), so it is left out of the totals.
     var upTo = false
+
+    var symbol: String {
+        switch id {
+        case "trash": return "trash"
+        case "caches": return "archivebox"
+        case "npm": return "shippingbox"
+        case "docker": return "cube"
+        case "phpls": return "chevron.left.forwardslash.chevron.right"
+        case "simdevices", "simruntimes": return "iphone"
+        case "devicesupport": return "cable.connector"
+        case "derived": return "hammer"
+        case "mail": return "envelope"
+        case "downloads": return "arrow.down.circle"
+        case "ollama": return "brain"
+        case "node_modules", "vendor": return "shippingbox.fill"
+        default: return "folder"
+        }
+    }
 
     var confirmText: String {
         switch action {

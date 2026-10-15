@@ -4,9 +4,12 @@ import Foundation
 final class DiskScanner: ObservableObject {
     @Published var isScanning = false
     @Published var phase = ""
+    /// The kind of the scan that's running, or of the last one.
+    @Published var kind: ScanKind = .overview
     @Published var total: Int64 = 0
     @Published var free: Int64 = 0
-    @Published var slices: [UsageSlice] = []
+    /// What the disk overview measured, without "Free" and "System Data" (those follow the live volume numbers).
+    @Published var parts: [UsageSlice] = []
     @Published var homeFolders: [FolderSize] = []
     @Published var libraryFolders: [FolderSize] = []
     @Published var cleanup: [CleanupItem] = []
@@ -14,7 +17,11 @@ final class DiskScanner: ObservableObject {
     @Published var vendorDirs: [FolderSize] = []
     @Published var deepScanDone = false
     @Published var needsFullDiskAccess = false
+    /// When the disk overview and the project search last finished.
     @Published var lastScan: Date?
+    @Published var lastProjectScan: Date?
+    /// How long each kind took last time, in seconds.
+    @Published var durations: [ScanKind: Double] = [:]
     @Published var lastError: String?
     @Published var working: String?
 
@@ -25,6 +32,29 @@ final class DiskScanner: ObservableObject {
     private var completed: Set<String> = []
 
     var used: Int64 { max(0, total - free) }
+    var hasResults: Bool { lastScan != nil || lastProjectScan != nil }
+
+    /// The usage bar: the measured parts, what's left of "Used", and the free space, largest first.
+    var slices: [UsageSlice] {
+        guard !parts.isEmpty else { return [] }
+        let scanned = parts.reduce(Int64(0)) { $0 + $1.bytes }
+        var all = parts
+        all.append(UsageSlice(name: "System Data & other (not scanned)", bytes: max(0, used - scanned), area: .system))
+        all.sort { $0.bytes > $1.bytes }
+        all.append(UsageSlice(name: "Free", bytes: free, area: .free))
+        return all
+    }
+
+    init() {
+        refreshVolume()
+        checkFullDiskAccess()
+        load()
+    }
+
+    private func checkFullDiskAccess() {
+        // ~/Library/Safari is protected by macOS; if we can't list it, Full Disk Access is missing.
+        needsFullDiskAccess = (try? FileManager.default.contentsOfDirectory(atPath: lib + "/Safari")) == nil
+    }
     var safeBytes: Int64 { cleanup.filter { $0.risk == .safe && !$0.upTo }.reduce(0) { $0 + $1.bytes } }
     var checkBytes: Int64 { cleanup.filter { $0.risk == .check && !$0.upTo }.reduce(0) { $0 + $1.bytes } }
 
@@ -39,21 +69,33 @@ final class DiskScanner: ObservableObject {
         }
     }
 
-    func scan() async {
+    func scan(_ kind: ScanKind) async {
         guard !isScanning else { return }
         isScanning = true
-        deepScanDone = false
+        self.kind = kind
         lastError = nil
-        completed = []
+        let started = Date()
         defer {
             isScanning = false
             phase = ""
+            durations[kind] = Date().timeIntervalSince(started)
+            save()
         }
 
-        let fm = FileManager.default
         refreshVolume()
-        // ~/Library/Safari is protected by macOS; if we can't list it, Full Disk Access is missing.
-        needsFullDiskAccess = (try? fm.contentsOfDirectory(atPath: lib + "/Safari")) == nil
+        checkFullDiskAccess()
+        if kind.includesOverview {
+            completed = []
+            await overviewScan()
+        }
+        if kind.includesProjects {
+            phase = "Looking for node_modules and vendor folders…"
+            await deepScan()
+        }
+    }
+
+    private func overviewScan() async {
+        let fm = FileManager.default
 
         func children(_ dir: String) -> [String] {
             ((try? fm.contentsOfDirectory(atPath: dir)) ?? [])
@@ -116,12 +158,7 @@ final class DiskScanner: ObservableObject {
         let restHome = sortedHome.dropFirst(6).reduce(Int64(0)) { $0 + $1.value }
         parts.append(UsageSlice(name: "Other home folders", bytes: restHome, area: .home, path: home))
 
-        parts = parts.filter { $0.bytes > 0 }
-        let scanned = parts.reduce(Int64(0)) { $0 + $1.bytes }
-        parts.append(UsageSlice(name: "System Data & other (not scanned)", bytes: max(0, used - scanned), area: .system))
-        parts.sort { $0.bytes > $1.bytes }
-        parts.append(UsageSlice(name: "Free", bytes: free, area: .free))
-        slices = parts
+        self.parts = parts.filter { $0.bytes > 0 }
 
         var homeList = sortedHome.map { FolderSize(path: $0.key, bytes: $0.value) }
         homeList.append(FolderSize(path: lib, bytes: libTotal))
@@ -131,9 +168,6 @@ final class DiskScanner: ObservableObject {
 
         lastScan = Date()
         buildCleanup()
-
-        phase = "Looking for node_modules and vendor folders…"
-        await deepScan()
     }
 
     private func deepScan() async {
@@ -153,6 +187,66 @@ final class DiskScanner: ObservableObject {
         nodeModules = nm.map { FolderSize(path: $0, bytes: found2[$0] ?? 0) }.sorted { $0.bytes > $1.bytes }
         vendorDirs = vendor.map { FolderSize(path: $0, bytes: found2[$0] ?? 0) }.sorted { $0.bytes > $1.bytes }
         deepScanDone = true
+        lastProjectScan = Date()
+        buildCleanup()
+    }
+
+    // MARK: - Last scan
+
+    /// Everything a scan found, so the window shows the last results when Wombat opens.
+    private struct SavedScan: Codable {
+        var lastScan: Date?
+        var lastProjectScan: Date?
+        var kind: ScanKind
+        var durations: [String: Double]
+        var parts: [UsageSlice]
+        var homeFolders: [FolderSize]
+        var libraryFolders: [FolderSize]
+        var nodeModules: [FolderSize]
+        var vendorDirs: [FolderSize]
+        var sizes: [String: Int64]
+        var simulatorBytes: Int64
+        var completed: [String]
+    }
+
+    private var saveURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return dir.appendingPathComponent("Wombat/last-scan.json")
+    }
+
+    func save() {
+        guard hasResults else { return }
+        let saved = SavedScan(lastScan: lastScan, lastProjectScan: lastProjectScan, kind: kind,
+                              durations: Dictionary(uniqueKeysWithValues: durations.map { ($0.key.rawValue, $0.value) }),
+                              parts: parts, homeFolders: homeFolders, libraryFolders: libraryFolders,
+                              nodeModules: nodeModules, vendorDirs: vendorDirs, sizes: sizes,
+                              simulatorBytes: simulatorBytes, completed: Array(completed))
+        do {
+            try FileManager.default.createDirectory(at: saveURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(saved).write(to: saveURL, options: .atomic)
+        } catch {
+            lastError = "Couldn't save the scan: \(error.localizedDescription)"
+        }
+    }
+
+    private func load() {
+        guard let data = try? Data(contentsOf: saveURL),
+              let saved = try? JSONDecoder().decode(SavedScan.self, from: data) else { return }
+        lastScan = saved.lastScan
+        lastProjectScan = saved.lastProjectScan
+        kind = saved.kind
+        durations = Dictionary(uniqueKeysWithValues: saved.durations.compactMap { key, value in
+            ScanKind(rawValue: key).map { ($0, value) }
+        })
+        parts = saved.parts
+        homeFolders = saved.homeFolders
+        libraryFolders = saved.libraryFolders
+        nodeModules = saved.nodeModules
+        vendorDirs = saved.vendorDirs
+        sizes = saved.sizes
+        simulatorBytes = saved.simulatorBytes
+        completed = Set(saved.completed)
+        deepScanDone = saved.lastProjectScan != nil
         buildCleanup()
     }
 
@@ -289,6 +383,7 @@ final class DiskScanner: ObservableObject {
             completed.insert(item.id)
             refreshVolume()
             buildCleanup()
+            save()
         } catch {
             lastError = "\(item.title): \(error.localizedDescription)"
         }
@@ -314,6 +409,7 @@ final class DiskScanner: ObservableObject {
         }
         refreshVolume()
         buildCleanup()
+        save()
     }
 
     func short(_ path: String) -> String {

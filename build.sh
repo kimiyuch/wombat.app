@@ -1,17 +1,18 @@
 #!/bin/bash
-# Builds DiskLens.app from source. Needs Xcode or the Command Line Tools.
+# Builds Wombat.app from source. Needs Xcode or the Command Line Tools.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "Compiling…"
 swift build -c release
-BIN="$(swift build -c release --show-bin-path)/DiskLens"
+BIN="$(swift build -c release --show-bin-path)/Wombat"
 
-APP="build/DiskLens.app"
+APP="build/Wombat.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/DiskLens"
+cp "$BIN" "$APP/Contents/MacOS/Wombat"
 cp Info.plist "$APP/Contents/Info.plist"
+cp -R Resources/Fonts "$APP/Contents/Resources/Fonts"   # Figtree, SIL Open Font License (OFL.txt)
 
 echo "Making the icon…"
 ICONSET="build/AppIcon.iconset"
@@ -27,4 +28,4 @@ codesign --force --deep --sign - "$APP"
 
 echo
 echo "Done: $(pwd)/$APP"
-echo "Install it with:  rm -rf /Applications/DiskLens.app && mv \"$APP\" /Applications/ && open /Applications/DiskLens.app"
+echo "Install it with:  rm -rf /Applications/Wombat.app && mv \"$APP\" /Applications/ && open /Applications/Wombat.app"
