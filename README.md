@@ -57,3 +57,8 @@ The first time you empty the Trash from Wombat, macOS asks whether it may contro
 - `Sources/Wombat/Theme.swift` — colours, Figtree and button styles, matching wombat.kimiyu.ch
 - `Sources/Wombat/Shell.swift` — running command-line tools off the main thread
 - `Resources/Fonts` — Figtree (SIL Open Font License, see `OFL.txt`)
+
+## License
+
+Wombat is free software under the [GNU General Public License v3](LICENSE). It bundles the Figtree font, which is
+under the [SIL Open Font License](Resources/Fonts/OFL.txt).
